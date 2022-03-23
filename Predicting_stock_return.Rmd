@@ -1,0 +1,191 @@
+---
+title: "Predicting stock returns using lags with regression models"
+author: "Linzi Guan"
+date: "2/18/2022"
+output: pdf_document
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+knitr::opts_chunk$set(fig.width=10, fig.height=6) 
+```
+
+## Introduction
+We have always been wondering how the lagged stock returns explain the real stock return so in this report, supervised machine learning models with Ridge regressions are come up with to make predictions of stock returns using 5 previous-day stock returns. The entire model building process starts with a data overview, and is followed by a simple stock model built with only one stock and finally a general stock model built with several stocks after taking consideration of the fixed effect inside each stock through one-hot encoding. 5-fold cross validation is used for selecting the optimal parameter in the loss function. And this report will be structured by discussing data in the Data section, model in the Model section, results in the Result section, and limitations in the Limitation Section. 
+
+## Data
+The package "rugarch" in R and the data set "dji30ret" are used in this report for analysis, which contains the closing value log returns for the Dow Jones 30 constituents from 1987-03-16 to 2009-02-03. A brief summary of the data set is as follows:
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+#install.packages("rugarch") #install the package "rugarch"
+library("rugarch") #load and attach the "rugarch" packages.
+data("dji30ret") #load the dataset dji30ret as a dataframe
+#class(dji30ret)
+print(summary(dji30ret)) #print out the head of the dataframe, and overview
+```
+
+There are 5521 observations and 30 stocks inside the data set.
+
+## Model
+
+### The simple model using only "AA" stock
+To start a simple model, we take the Alcoa Corporation stock as an instance first, which is denoted by "AA" and we create 5 lagged stock returns as inputs for our model and use the real stock return as the output. A brief summary of the variables of the model is as follows:
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+df_AA <- data.frame(dji30ret$AA, row.names = row.names(dji30ret)) 
+AA_return <- dji30ret$AA
+lag_1 <- c(NA, head(AA_return, -1)) #lag AA return by 1 period
+lag_2 <- c(NA, NA, head(AA_return, -2)) #lag AA return by 2 periods
+lag_3 <- c(NA, NA, NA, head(AA_return, -3)) #lag AA return by 3 periods
+lag_4 <- c(NA, NA, NA, NA, head(AA_return, -4)) #lag AA return by 4 periods
+lag_5 <- c(NA, NA, NA, NA, NA, head(AA_return, -5)) #lag AA return by 5 periods
+df_AA <- cbind(df_AA, lag_1, lag_2, lag_3, lag_4, lag_5)
+#combine the AA return and lags together into one dataframe called df_AA
+colnames(df_AA)[colnames(df_AA) == "dji30ret.AA"] <- "AA_return"
+#rename the column of AA return to AA_return
+df_AA <- na.omit(df_AA) #remove rows containing all NAs 
+print(summary(df_AA)) 
+```
+
+The data to date 2002-12-31 are used as the training data and the data from date 2003-01-02 to date 2009-02-03 are used as the testing data. The training set is fit into a ridge regressing to predict the target variable using the features(the lagged five returns). 
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+train_AA <- df_AA[1:which(rownames(df_AA) == "2002-12-31"),]
+#training data frame contains data with dates to 2002-12-31
+test_AA <- df_AA[which(rownames(df_AA) == "2003-01-02"):which(rownames(df_AA) == "2009-02-03"),]
+#testing data frame contains data with dates starting from 2003-01-02 to 2009-02-03 
+library(ISLR)
+library(glmnet)
+y_train <- train_AA[,"AA_return"]
+#AA_return is the target variable of the training set
+x_train <- as.matrix(train_AA[,c("lag_1","lag_2","lag_3","lag_4","lag_5")])
+#the lags are the explanatory variables of the training set -> in matrix form
+```
+
+The optimal lambda of the Ridge regression is found via 5-fold cross validation and a plot of the lambda parameter vs. the Mean Squared Error is shown as follows:
+
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+grd <- 10 ^ seq( 10, -2, length = 100)
+ridge.mod <- glmnet(x_train, y_train, alpha = 0, lambda = grd)
+set.seed(1)
+cv.out <- cv.glmnet(x_train, y_train, alpha = 0, nfolds = 5)
+bestlam <- cv.out$lambda.min #find the optimal lambda
+#use 5-fold cross validation
+plot(cv.out)
+#plot the cv
+```
+The optimal lambda parameter is 0.02156627 and the model after fitting the Ridge regression using the optimal parameter chosen above (use the entire Training Set) is summarized as follows:
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+best_ridge <- glmnet(x_train, y_train, alpha = 0, lambda = bestlam)
+print(summary(best_ridge))
+```
+
+### The general model using all the stocks
+Similarly, 5 lagged stock returns are added as input variables. Besides this, dummy variables are added to realize one-hot encoding to get rid of the fix effects in different stocks. After preprocessing, the data frame has 165480 observations with 36 columns(5 lagged values, 1 true return and 30 dummy columns).
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+get_df <- function(column_name) {
+   return(data.frame(dji30ret[column_name], row.names = row.names(dji30ret)) ) 
+}	
+add_lag <- function(column_name){
+  stock_return <- dji30ret[[column_name]]
+  lag_1 <- c(NA, head(stock_return, -1))
+  lag_2 <- c(NA, NA, head(stock_return, -2))
+  lag_3 <- c(NA, NA, NA, head(stock_return, -3)) 
+  lag_4 <- c(NA, NA, NA, NA, head(stock_return, -4)) 
+  lag_5 <- c(NA, NA, NA, NA, NA, head(stock_return, -5)) 
+  df <- cbind(get_df(column_name), lag_1, lag_2, lag_3, lag_4, lag_5)
+  df <- na.omit(df)
+  df <- cbind(df, column_name)
+  #print(summary(df))
+  colnames(df)[1] <- "stock_return"
+  return(df)
+}
+df_total <- data.frame(matrix(ncol = 7, nrow = 0)) #create an empty list
+for (column_name in colnames(dji30ret)) {
+   df_total <- rbind(df_total, add_lag(column_name))
+} #stack all dataframes by column
+df_total <- cbind(df_total, model.matrix(~-1 + column_name, data = df_total))
+df_total <- subset (df_total, select = -column_name)
+df_total <- cbind(df_total,rownames(df_total))
+df_total <- df_total[order(df_total[["rownames(df_total)"]]),][-37]
+df_total <- na.omit(df_total)
+```
+
+Also, the data to date 2002-12-31 are used as the training data and the data from date 2003-01-02 to date 2009-02-03 are used as the testing data. The training set is fit into a ridge regressing to predict the target variable using the features(the lagged five returns and dummy variables). 
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+train_total <- df_total[1:which(rownames(df_total) == "2002-12-319"),]
+#training data frame contains data with dates to 2002-12-31
+test_total <- df_total[which(rownames(df_total) == "2003-01-02"):
+                         which(rownames(df_total) == "2009-02-039"),]
+#testing data frame contains data with dates starting from 2003-01-02 to 2009-02-03 
+library(ISLR)
+library(glmnet)
+y_train_total <- train_total[,"stock_return"]
+#AA_return is the target variable of the training set
+x_train_total <- as.matrix(train_total[,-1])
+#the lags are the explanatory variables of the training set -> in matrix form
+```
+
+The optimal lambda of the Ridge regression is found via 5-fold cross validation and a plot of the lambda parameter vs. the Mean Squared Error is shown as follows:
+
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+grd <- 10 ^ seq( 10, -2, length = 100)
+ridge.mod.total <- glmnet(x_train_total, y_train_total, alpha = 0, lambda = grd)
+set.seed(1)
+cv.out.total <- cv.glmnet(x_train_total, y_train_total, alpha = 0, nfolds = 5)
+#use 5-fold cross validation
+bestlam.total <- cv.out.total$lambda.min #find the optimal lambda
+plot(cv.out.total)
+#plot the cv
+```
+The optimal lambda chosen in this model is 0.003593454 and after fitting the Ridge regression using the optimal parameter chosen above (use the entire Training Set), a summary of the fitted model is as follows:
+
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+best_ridge.total <- glmnet(x_train_total, y_train_total, alpha = 0, lambda = bestlam.total)
+print(summary(best_ridge.total))
+```
+
+
+## Result
+
+### The simple model using only "AA" stock
+The mean absolute error using the fitted model above to predict the returns of AA in the Test Set is 0.01772329.
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+y_test <- test_AA[,"AA_return"]
+x_test <- as.matrix(test_AA[,c("lag_1","lag_2","lag_3","lag_4","lag_5")])
+ridge.pred <- predict(best_ridge, s = bestlam, newx <- x_test)
+mean_abs_simple <- mean(abs(ridge.pred-y_test))
+```
+
+The scatterplot of predictions against the true values is as follows:
+
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+plot(y_test, ridge.pred, main = "Scatterplot of predictions against the true values", 
+     xlab = "Actual Values" , ylab = "Predicted Values")
+abline(lsfit(y_test, ridge.pred),col="red")
+```
+
+Conclusions can be drawn from the scatterplot that the model does not fit quite well from the scatterplot as the predicted values are not that close to actual values (the line is not close to a regressed diagonal line)
+
+### The general model using all the stocks
+The mean absolute error using the fitted model above to predict the returns of all stocks in the Test Set is 0.0127128.
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+y_test_total <- test_total[,"stock_return"]
+x_test_total <- as.matrix(test_total[,-1]) #use all the columns to make prediction
+ridge.pred.total <- predict(best_ridge.total, s = bestlam.total, newx <- x_test_total)
+mae.pred.total <- mean(abs(ridge.pred.total-y_test_total))
+```
+
+The scatterplot of predictions against the true values is as follows:
+
+```{r, message = FALSE, warning = FALSE, echo=FALSE}
+plot(y_test_total, ridge.pred.total, main = "Scatterplot of predictions against the true values", 
+     xlab = "Actual Value" , ylab = "Predicted Value")
+abline(lsfit(y_test_total, ridge.pred.total),col="red")
+```
+
+Compared to the previous predicted value vs actual value graph, this model does not have a significant improvement from the above although MAE decreases since the predicted value range is still much narrower than the actual value range and the line is not regressed diagonally.
+
+## Limitations and next steps
+There are several limitations in the models. One is multicollinearity and next step could be setting a baseline of the variables and dropping one dummy variable to avoid multicollinearity. Furthermore, if we consider using dummy variables to improve the model, we could incorporate factors that impact stock behaviors such as the size of the company(whether it is a large company or small company indicated by P/E ratio), whether the company is a value company or growth company, and so on. We can add dummy variables in these aspects and train our model to see whether there would be some improvements for the fitted model.
+
+\newpage
+# Reference {-}
+
+R Core Team. 2020. R: A Language and Environment for Statistical Computing. Vienna, Austria: R Foundation for Statistical Computing. https://www.R-project.org/ (https://www.R-project.org/).
